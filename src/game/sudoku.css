@@ -1,0 +1,46 @@
+/**
+ * 数独 —— 样式
+ */
+
+.board-svg .sd-board-bg {
+  fill: #fffdf8;
+  stroke: #2b3a3f;
+  stroke-width: 1.6;
+}
+
+.board-svg .sd-grid {
+  stroke: #c8bfa9;
+  stroke-width: 0.7;
+  pointer-events: none;
+}
+
+.board-svg .sd-region {
+  stroke: #2b3a3f;
+  stroke-width: 2.4;
+  stroke-linecap: square;
+  pointer-events: none;
+}
+
+.board-svg .sd-value {
+  fill: #2f6f8f;
+  font-family: var(--mono);
+  font-weight: 600;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  user-select: none;
+}
+
+.board-svg .sd-value.given {
+  fill: #263338;
+  font-weight: 800;
+}
+
+.board-svg .sd-value.bad {
+  fill: var(--error);
+}
+
+.board-svg .cell-hit {
+  fill: transparent;
+  stroke: none;
+}
