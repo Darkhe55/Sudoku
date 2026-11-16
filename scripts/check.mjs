@@ -15,7 +15,11 @@ import { decodeBoard, decodeCells, regionCountOf } from '../src/game/types.ts'
 import { isValidSolution, solveByRules } from '../src/game/rules.ts'
 import { countSolutions } from '../src/game/solver.ts'
 
-const FILES = ['src/game/puzzles-data.ts', 'src/game/imported-puzzles.ts'].map((p) => path.resolve(p))
+const FILES = [
+  'src/game/puzzles-data.ts',
+  'src/game/puzzles-extra-data.ts',
+  'src/game/imported-puzzles.ts',
+].map((p) => path.resolve(p))
 
 const ENTRY_RE =
   /\{\s*id:\s*"([^"]+)",\s*name:\s*"([^"]+)",\s*width:\s*(\d+),\s*height:\s*(\d+),\s*difficulty:\s*'([^']+)',\s*series:\s*"([^"]*)",\s*board:\s*"([^"]*)",\s*solution:\s*"([^"]*)"\s*\}/g
@@ -133,6 +137,20 @@ for (const e of entries) {
 }
 
 console.log(`[check] 共 ${entries.length} 题，错误 ${errors}，警告 ${warnings}`)
+const bySize = new Map()
+for (const e of entries) {
+  const key = `${e.width}×${e.height}`
+  bySize.set(key, (bySize.get(key) || 0) + 1)
+}
+if (bySize.size) {
+  console.log(
+    '[check] 尺寸分布：' +
+      Array.from(bySize.entries())
+        .sort((a, b) => parseInt(a[0]) - parseInt(b[0]))
+        .map(([k, v]) => `${k}×${v}题`)
+        .join(' · '),
+  )
+}
 if (entries.length === 0) {
   console.warn('[check] 题库为空，请先运行 npm run gen。')
 }

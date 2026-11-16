@@ -94,8 +94,14 @@ export class CustomEditor {
     const wEl = document.getElementById('custom-w') as HTMLInputElement | null
     const hEl = document.getElementById('custom-h') as HTMLInputElement | null
     const meta = this.adapter.meta
-    const w = Math.max(meta.customMinW, Math.min(meta.customMaxW, Number(wEl?.value) || 5))
-    const h = Math.max(meta.customMinH, Math.min(meta.customMaxH, Number(hEl?.value) || 5))
+    const w = Math.max(
+      meta.customMinW,
+      Math.min(meta.customMaxW, Number(wEl?.value) || meta.customMinW),
+    )
+    const h = Math.max(
+      meta.customMinH,
+      Math.min(meta.customMaxH, Number(hEl?.value) || meta.customMinH),
+    )
     if (wEl) wEl.value = String(w)
     if (hEl) hEl.value = String(h)
     return { w, h }
@@ -190,8 +196,10 @@ export class CustomEditor {
     if (this.grid.length !== w * h) {
       this.grid = new Array<number | null>(w * h).fill(null)
     }
+    // 大尺寸题板（如 16..25）自动缩小格子，保证在侧栏里可点
+    const cellPx = w <= 9 ? 36 : w <= 12 ? 32 : w <= 16 ? 28 : 24
     grid.className = 'custom-grid'
-    grid.style.gridTemplateColumns = `repeat(${w}, 36px)`
+    grid.style.gridTemplateColumns = `repeat(${w}, ${cellPx}px)`
     grid.innerHTML = this.grid
       .map((v, i) => {
         const label = this.adapter.custom.cellLabel(v)

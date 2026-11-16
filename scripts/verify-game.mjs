@@ -119,7 +119,37 @@ const customDisabled = await page.locator('#btn-custom').isDisabled()
 console.log('custom disabled:', customDisabled)
 if (customDisabled) {
   failures++
-  console.error('FAIL: 数独 应支持自定义题板（9×9 / 16×16）')
+  console.error('FAIL: 数独 应支持自定义题板（4..25）')
+}
+
+// 自定义题板：4 / 6 / 9 / 12 / 16 尺寸网格
+await page.click('#btn-custom')
+await page.waitForTimeout(150)
+for (const n of [4, 6, 9, 12, 16]) {
+  await page.fill('#custom-w', String(n))
+  await page.fill('#custom-h', String(n))
+  await page.click('#custom-regen')
+  await page.waitForTimeout(80)
+  const cells = await page.evaluate(() => document.querySelectorAll('.custom-cell').length)
+  console.log(`custom ${n}x${n}:`, cells)
+  if (cells !== n * n) {
+    failures++
+    console.error(`FAIL: 自定义 ${n}×${n} 题板应有 ${n * n} 格，实际 ${cells}`)
+  }
+}
+await page.click('#custom-close')
+await page.waitForTimeout(80)
+
+// 内置题尺寸覆盖（至少 4/6/9/12/16）
+const sizes = await page.evaluate(() =>
+  [...new Set(window.__game.adapter.builtinPuzzles.map((p) => p.width))].sort((a, b) => a - b),
+)
+console.log('builtin sizes:', sizes)
+for (const n of [4, 6, 9, 12, 16]) {
+  if (!sizes.includes(n)) {
+    failures++
+    console.error(`FAIL: 内置题缺少 ${n}×${n} 尺寸`)
+  }
 }
 
 await page.screenshot({ path: 'output/playwright/05-verified.png', fullPage: true })

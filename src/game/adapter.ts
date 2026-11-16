@@ -3,7 +3,8 @@
  *  数独（Sudoku）—— 游戏适配器
  * ════════════════════════════════════════════════════════════════════
  *
- * 尺寸：任意 N×N（内置 9×9；识图导入支持 16×16 等）。
+ * 尺寸：任意 N×N（4..25 自定义，内置 4/6/9/12/16；识图可导入 4..25 等）。
+ * 宫：标准矩形宫（6→2×3、9→3×3、12→3×4、16→4×4），质数边长退化为拉丁方。
  * 状态：0 = 未填，1..N = 数字/字母（N>9 时 10..36 用 A..Z 显示）。
  */
 
@@ -29,45 +30,41 @@ import { statusBits, validate } from './validate.ts'
 import {
   decodeBoard,
   encodeBoard,
+  isValidSudokuSize,
+  MAX_SUDOKU_SIZE,
+  MIN_SUDOKU_SIZE,
   puzzleSize,
-  standardBox,
   standardRegionsOf,
   valueOfSymbol,
   type SudokuPuzzle,
 } from './types.ts'
 
-/** 自定义题板支持的边长（必须能整除成标准宫） */
-const CUSTOM_SIZES = [9, 16]
-
-function customRegionsFor(n: number): number[] {
-  return standardBox(n) ? standardRegionsOf(n) : new Array<number>(n * n).fill(0)
-}
-
 const meta = {
   title: '数独',
-  tagline: 'N×N 填数 —— 每行、每列、每宫都必须是 1..N（内置 9×9，识图支持 16×16）',
+  tagline:
+    'N×N 填数 —— 每行、每列、每宫都必须是 1..N（内置 4/6/9/12/16 宫，自定义 4..25）',
   footerNote:
-    '规则：在 N×N 格中填入 1..N（9×9 用 1..9，16×16 用 1..9 与 A..G），每行、每列、每个宫内的数字都不能重复。题面预填数字不能修改。',
+    '规则：在 N×N 格中填入 1..N（超过 9 用 A..Z 表示 10..25），每行、每列、每个宫（4×4 为 2×2 宫、6×6 为 2×3 宫、9×9 为 3×3 宫、12×12 为 3×4 宫、16×16 为 4×4 宫）内的数字都不能重复。题面预填数字不能修改。',
   storageKeyPrefix: 'sudoku',
   customIdPrefix: 'sudoku-custom-',
-  customMinW: 9,
-  customMinH: 9,
-  customMaxW: 16,
-  customMaxH: 16,
+  customMinW: MIN_SUDOKU_SIZE,
+  customMinH: MIN_SUDOKU_SIZE,
+  customMaxW: MAX_SUDOKU_SIZE,
+  customMaxH: MAX_SUDOKU_SIZE,
   targetKind: 'cell' as const,
 }
 
-/** 1..16（大棋盘用 A..G 表示 10..16） */
-const VALUE_CYCLE: Array<number | null> = [null, ...Array.from({ length: 16 }, (_, i) => i + 1)]
+/** 1..N（大棋盘用 A..Z 表示 10..36） */
+const VALUE_CYCLE: Array<number | null> = [null, ...Array.from({ length: 25 }, (_, i) => i + 1)]
 
 const custom: CustomSupport = {
   mode: 'cell',
   valueCycle: VALUE_CYCLE,
   valueCycleFor: (w, h) => {
-    const n = Math.max(4, Math.min(36, Math.max(w, h)))
+    const n = Math.max(MIN_SUDOKU_SIZE, Math.min(MAX_SUDOKU_SIZE, Math.max(w, h)))
     return [null, ...Array.from({ length: n }, (_, i) => i + 1)]
   },
-  validSize: (w, h) => w === h && CUSTOM_SIZES.includes(w),
+  validSize: (w, h) => w === h && isValidSudokuSize(w),
   keyForDigit: (digit) => {
     if (digit === 0) return null
     if (digit >= 1 && digit <= 9) return digit
@@ -78,12 +75,12 @@ const custom: CustomSupport = {
     if (v >= 10 && v <= Math.min(36, Math.max(9, maxValue))) return v
     return undefined
   },
-  cellLabel: (v) => (v == null ? '' : String(v)),
+  cellLabel: (v) => (v == null ? '' : v <= 9 ? String(v) : String.fromCharCode(55 + v)),
   cellClass: (v) => (v == null ? '' : `n${v}`),
   hint:
-    '点击格子循环填数；也可用键盘 1–9 填数（16×16 用 A–G 填 10–16）、0 / 退格清空、方向键移动。题面只有预填数字，唯一解不做强制校验。',
+    '点击格子循环填数；也可用键盘 1–9 填数（10 以上用 A–Z，或 Shift+A..Z / 数字面板）、0 / 退格清空、方向键移动。题面只有预填数字，唯一解不做强制校验。',
   makePuzzle: (w, h, grid, existingId) => {
-    const n = Math.max(4, Math.min(16, Math.max(w, h)))
+    const n = Math.max(MIN_SUDOKU_SIZE, Math.min(MAX_SUDOKU_SIZE, Math.max(w, h)))
     const size = n * n
     const givens = new Array<number>(size).fill(0)
     for (let i = 0; i < size; i++) {
@@ -96,7 +93,7 @@ const custom: CustomSupport = {
       width: n,
       height: n,
       difficulty: 'custom',
-      regions: customRegionsFor(n),
+      regions: standardRegionsOf(n),
       givens,
     } satisfies SudokuPuzzle
   },
@@ -104,15 +101,15 @@ const custom: CustomSupport = {
     const sp = p as SudokuPuzzle
     const n = puzzleSize(sp) || 9
     return {
-      board: encodeBoard(sp.givens ?? [], sp.regions ?? customRegionsFor(n)),
+      board: encodeBoard(sp.givens ?? [], sp.regions ?? standardRegionsOf(n)),
     }
   },
   decodePuzzle: (record) => {
     if (typeof record.id !== 'string' || typeof record.board !== 'string') return null
     const n = puzzleSize({ width: Number(record.width), height: Number(record.height) })
-    if (!n || n < 4 || n > 16) return null
+    if (!isValidSudokuSize(n)) return null
     const size = n * n
-    const decoded = decodeBoard(record.board, size, n, n)
+    const decoded = decodeBoard(record.board, size, n, 36)
     if (!decoded) return null
     return {
       id: record.id,

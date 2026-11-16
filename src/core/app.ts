@@ -74,8 +74,8 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
       <div class="custom-editor" id="custom-editor" hidden>
         <h2>自定义题板</h2>
         <div class="custom-row">
-          <label>宽 <input id="custom-w" type="number" min="${meta.customMinW}" max="${meta.customMaxW}" value="5" /></label>
-          <label>高 <input id="custom-h" type="number" min="${meta.customMinH}" max="${meta.customMaxH}" value="5" /></label>
+          <label>宽 <input id="custom-w" type="number" min="${meta.customMinW}" max="${meta.customMaxW}" value="${Math.max(meta.customMinW, Math.min(meta.customMaxW, 9))}" /></label>
+          <label>高 <input id="custom-h" type="number" min="${meta.customMinH}" max="${meta.customMaxH}" value="${Math.max(meta.customMinH, Math.min(meta.customMaxH, 9))}" /></label>
           <button class="btn" id="custom-regen" type="button">生成网格</button>
         </div>
         <div class="custom-hint" id="custom-hint"></div>
