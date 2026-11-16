@@ -1,10 +1,26 @@
 /**
- * 数独 —— 题库
+ * 数独 —— 题库加载
+ *
+ * 题库由两部分组成：
+ *   - RAW_PUZZLES：npm run gen 生成的内置题（9×9，会被重新生成覆盖）
+ *   - IMPORTED_PUZZLES：scripts/import-image.mjs --append 写入的识图题
+ *     （单独文件，npm run gen 不会覆盖；支持任意 N / 任意宫形）
+ *
+ * 题面编码见 types.ts：givens|regions，每格 1 个 36 进制字符，
+ * 因此 9×9（值 1..9 / 宫 0..8）与 16×16（值 1..16 / 宫 0..15）共用同一套解析。
  */
 
 import type { Difficulty, GameState, Puzzle } from '../core/types'
-import { RAW_PUZZLES } from './puzzles-data'
-import { decodeCells, decodeBoard, type SudokuPuzzle, type SudokuState } from './types'
+import { RAW_PUZZLES } from './puzzles-data.ts'
+import { IMPORTED_PUZZLES } from './imported-puzzles.ts'
+import {
+  decodeBoard,
+  decodeCells,
+  puzzleSize,
+  regionCountOf,
+  type SudokuPuzzle,
+  type SudokuState,
+} from './types.ts'
 
 export interface RawPuzzle {
   id: string
@@ -17,36 +33,54 @@ export interface RawPuzzle {
   solution?: string
 }
 
-export function decodePuzzle(raw: RawPuzzle): SudokuPuzzle | null {
-  if (raw.width !== 9 || raw.height !== 9) return null
-  const decoded = decodeBoard(raw.board, 81)
+/** 内置题 + 识图导入题 */
+export const ALL_RAW_PUZZLES: RawPuzzle[] = [
+  ...(RAW_PUZZLES as RawPuzzle[]),
+  ...(IMPORTED_PUZZLES as RawPuzzle[]),
+]
+
+/**
+ * 把题库条目解码成可玩题面。
+ * 接受任意正方形边长 4..36（9 / 14 / 16 都可以），宫数 1..N。
+ * @param editable 是否允许在题库里编辑/删除（图片导入的题面为 false）
+ */
+export function decodePuzzle(raw: RawPuzzle, editable = true): SudokuPuzzle | null {
+  const n = puzzleSize(raw)
+  if (!n || n < 4 || n > 36) return null
+  const size = n * n
+  const decoded = decodeBoard(raw.board, size, n, n)
   if (!decoded) return null
+  const regionCount = regionCountOf(decoded.regions)
+  if (regionCount < 1 || regionCount > n) return null
   return {
     id: raw.id,
     name: raw.name,
-    width: 9,
-    height: 9,
+    width: n,
+    height: n,
     difficulty: raw.difficulty,
     regions: decoded.regions,
     givens: decoded.givens,
+    editable,
   }
 }
 
-export const builtinPuzzles: Puzzle[] = (RAW_PUZZLES as RawPuzzle[])
-  .map(decodePuzzle)
-  .filter((p): p is SudokuPuzzle => p !== null)
+export const builtinPuzzles: Puzzle[] = [
+  ...(RAW_PUZZLES as RawPuzzle[]).map((raw) => decodePuzzle(raw, false)),
+  ...(IMPORTED_PUZZLES as RawPuzzle[]).map((raw) => decodePuzzle(raw, false)),
+].filter((p): p is SudokuPuzzle => p !== null)
 
 export function getReferenceSolution(id: string): GameState | null {
-  const raw = (RAW_PUZZLES as RawPuzzle[]).find((p) => p.id === id)
-  if (!raw || typeof raw.solution !== 'string') return null
-  const cells = decodeCells(raw.solution, 81)
-  if (!cells) return null
+  const raw = ALL_RAW_PUZZLES.find((p) => p.id === id)
+  if (!raw || typeof raw.solution !== 'string' || !raw.solution) return null
   const puzzle = decodePuzzle(raw)
   if (!puzzle) return null
+  const size = puzzle.width * puzzle.height
+  const cells = decodeCells(raw.solution, size, puzzle.width)
+  if (!cells) return null
   const state: SudokuState = {
     puzzleId: puzzle.id,
-    width: 9,
-    height: 9,
+    width: puzzle.width,
+    height: puzzle.height,
     cells,
     givens: puzzle.givens.slice(),
   }

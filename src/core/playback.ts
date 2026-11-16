@@ -29,6 +29,8 @@ export interface PlaybackHooks {
 }
 
 const LOGIC_ANIM_MS = 720
+/** 整段回放的期望时长上限：帧数多（大棋盘）时自动缩短单帧间隔 */
+const LOGIC_TOTAL_MS = 24_000
 
 export class LogicPlayer {
   private token = 0
@@ -118,6 +120,10 @@ export class LogicPlayer {
     }
 
     this.total = plan.frames.length
+    const gapMs = Math.min(
+      LOGIC_ANIM_MS,
+      Math.max(60, Math.round(LOGIC_TOTAL_MS / Math.max(1, plan.frames.length))),
+    )
     this.hooks.setStatus(
       `推理完成：${plan.frames.length} 帧 / ${plan.ruleSteps} 条规则步，开始回放…`,
       'solving',
@@ -142,7 +148,7 @@ export class LogicPlayer {
       )
 
       if (i < plan.frames.length - 1) {
-        const gap = Math.max(50, Math.round(LOGIC_ANIM_MS / frame.streak))
+        const gap = Math.max(50, Math.round(gapMs / frame.streak))
         const more = await this.sleepPausable(gap, token)
         if (!more) return
       }

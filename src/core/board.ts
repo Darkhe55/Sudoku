@@ -303,7 +303,7 @@ export function regionBoundarySegments(
   return out
 }
 
-/** 区域配色（按区域号循环） */
+/** 区域配色（按区域号循环；默认 18 色，够 16×16 标准宫使用） */
 export const REGION_PALETTE = [
   'hsl(150 32% 93%)',
   'hsl(35 44% 93%)',
@@ -317,6 +317,12 @@ export const REGION_PALETTE = [
   'hsl(15 40% 93%)',
   'hsl(240 24% 94%)',
   'hsl(195 32% 92%)',
+  'hsl(165 28% 93%)',
+  'hsl(50 40% 93%)',
+  'hsl(225 30% 94%)',
+  'hsl(300 24% 94%)',
+  'hsl(135 24% 92%)',
+  'hsl(25 36% 94%)',
 ]
 
 export function regionFill(region: number): string {

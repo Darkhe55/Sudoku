@@ -21,6 +21,12 @@ export interface Puzzle {
   width: number
   height: number
   difficulty: Difficulty
+  /**
+   * 可选：题面是否允许在题库列表里编辑/删除。
+   * 内置或图片导入的题面设为 false（删了也会被重新加载）；
+   * 缺省（undefined）视为可编辑的自定义题。
+   */
+  editable?: boolean
 }
 
 /** 通用棋盘状态（各游戏扩展） */
@@ -156,8 +162,24 @@ export interface CustomSupport {
   mode?: 'cell' | 'region' | 'picture' | 'edge' | 'none'
   /** 点击循环的值序列（null 表示空格；0 = Unknown 约定由 core 处理，编辑器不显式出现 0） */
   valueCycle: Array<number | null>
+  /**
+   * 可选：按题板尺寸返回点击循环的值序列。
+   * 大尺寸游戏（如 16×16 数独）用它把编辑器可选值限制在 1..N；
+   * 未实现时退回 valueCycle。
+   */
+  valueCycleFor?(w: number, h: number): Array<number | null>
   /** 编辑器按键 0-9 对应的值：返回 undefined 表示该键不用 */
   keyForDigit(digit: number): number | null | undefined
+  /**
+   * 可选：单个字符键（A-Z 等）对应的值，大尺寸棋盘用它输入 10 以上的值。
+   * @param maxValue 当前题板最大可填值（= N）
+   */
+  keyForChar?(ch: string, maxValue: number): number | null | undefined
+  /**
+   * 可选：编辑器允许的尺寸。返回 false 时编辑器拒绝生成/载入，
+   * 用于只支持特定边长（如 9×9 / 16×16）的游戏。
+   */
+  validSize?(w: number, h: number): boolean
   /** 编辑器格子显示文案 */
   cellLabel(v: number | null): string
   /** 编辑器格子附加 CSS 类（可选） */

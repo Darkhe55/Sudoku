@@ -101,6 +101,18 @@ export class CustomEditor {
     return { w, h }
   }
 
+  /** 当前尺寸是否被游戏接受（未实现 validSize 时一律接受） */
+  private sizeOk(w: number, h: number): boolean {
+    const valid = this.adapter.custom.validSize
+    return !valid || valid(w, h)
+  }
+
+  /** 当前尺寸对应的点击循环值序列 */
+  private cycleFor(w: number, h: number): Array<number | null> {
+    const custom = this.adapter.custom
+    return custom.valueCycleFor?.(w, h) ?? custom.valueCycle
+  }
+
   // —— 边模式 ——
 
   private setEdge(e: number, value: number | null): void {
@@ -193,7 +205,7 @@ export class CustomEditor {
         const i = Number(btn.dataset.i)
         this.selectCell(i)
         const cur = this.grid[i] ?? null
-        const cycle = this.adapter.custom.valueCycle
+        const cycle = this.cycleFor(w, h)
         const pos = cycle.indexOf(cur)
         const next = cycle[(pos + 1) % cycle.length] ?? null
         this.setCell(i, next)
@@ -310,6 +322,16 @@ export class CustomEditor {
         return true
       }
     }
+    // 大尺寸（如 16×16）用字母键输入 10 以上的值
+    if (k.length === 1 && this.adapter.custom.keyForChar) {
+      const value = this.adapter.custom.keyForChar(k.toUpperCase(), Math.max(this.w, this.h))
+      if (value !== undefined) {
+        e.preventDefault()
+        this.setCell(this.cursor, value ?? null)
+        this.moveCursor(1, 0)
+        return true
+      }
+    }
     if (k === '.' || k === 'Backspace' || k === 'Delete' || k === ' ') {
       e.preventDefault()
       this.setCell(this.cursor, null)
@@ -380,6 +402,10 @@ export class CustomEditor {
     const { w, h } = this.readSize()
     this.w = w
     this.h = h
+    if (!this.sizeOk(w, h)) {
+      this.host.message(`本游戏暂不支持 ${w}×${h} 自定义题板，请换一个尺寸。`, 'bad')
+      return
+    }
     if (this.mode() === 'edge') {
       if (this.edges.length !== edgeCount(w, h)) {
         this.edges = new Array<number | null>(edgeCount(w, h)).fill(null)
@@ -408,6 +434,10 @@ export class CustomEditor {
 
   save(): void {
     const { w, h } = this.readSize()
+    if (!this.sizeOk(w, h)) {
+      this.host.message(`本游戏暂不支持 ${w}×${h} 自定义题板，请换一个尺寸。`, 'bad')
+      return
+    }
     if (this.mode() === 'edge') {
       if (this.edges.length !== edgeCount(w, h)) {
         this.host.message('请先生成网格并填好边。', 'bad')

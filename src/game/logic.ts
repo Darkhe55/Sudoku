@@ -1,10 +1,13 @@
 /**
- * 数独 —— 逻辑解题回放计划
+ * 数独 —— 逻辑解题回放计划（任意 N）
+ *
+ * 与 9×9 行为一致：先规则传播，再用反证；推不满时退回回溯并标为 search。
+ * 大棋盘（N>9）反证代价高，加了时间预算：超时则保留已推出的帧并标记 saturated=false。
  */
 
 import type { GameState, LogicPlan, PlaybackFrame, Puzzle } from '../core/types'
-import { isValidSolution, propagate, type RuleKind } from './rules'
-import { asSudokuPuzzle, asSudokuState, type SudokuState } from './types'
+import { isValidSolution, propagate, type RuleKind } from './rules.ts'
+import { asSudokuPuzzle, asSudokuState, squareSize, type SudokuState } from './types.ts'
 
 const RULE_INFO: Record<RuleKind | 'probe' | 'search', { rule: number; label: string }> = {
   latin: { rule: 1, label: '行/列/宫数字不能重复' },
@@ -16,8 +19,10 @@ const RULE_INFO: Record<RuleKind | 'probe' | 'search', { rule: number; label: st
 function fallbackSolve(
   grid: number[],
   regions: number[],
+  n: number,
   maxNodes: number,
 ): number[] | null {
+  const size = n * n
   let nodes = 0
   let timedOut = false
   const work = grid.slice()
@@ -28,21 +33,21 @@ function fallbackSolve(
       timedOut = true
       return null
     }
-    if (!propagate(work, regions)) return null
+    if (!propagate(work, regions, undefined, n)) return null
     let choice = -1
-    for (let i = 0; i < 81; i++) {
+    for (let i = 0; i < size; i++) {
       if (work[i] === 0) {
         choice = i
         break
       }
     }
-    if (choice < 0) return isValidSolution(work, regions) ? Array.from(work) : null
+    if (choice < 0) return isValidSolution(work, regions, n) ? Array.from(work) : null
     const backup = work.slice()
-    for (let v = 1; v <= 9; v++) {
+    for (let v = 1; v <= n; v++) {
       work[choice] = v
       const found = dfs()
       if (found) return found
-      for (let i = 0; i < 81; i++) work[i] = backup[i]!
+      for (let i = 0; i < size; i++) work[i] = backup[i]!
       if (timedOut) return null
     }
     return null
@@ -54,6 +59,8 @@ export function planLogicSolve(puzzle: Puzzle, initialState: GameState): LogicPl
   const p = asSudokuPuzzle(puzzle)
   const s = asSudokuState(initialState)
   const regions = p.regions ?? []
+  const n = squareSize(regions.length) || p.width || 9
+  const size = n * n
 
   const emptyPlan: LogicPlan = {
     puzzleId: p.id,
@@ -81,12 +88,21 @@ export function planLogicSolve(puzzle: Puzzle, initialState: GameState): LogicPl
   }
   const onSet = (index: number, value: number, kind: RuleKind): void => emit(index, value, kind)
 
-  if (!propagate(grid, regions, onSet)) return emptyPlan
+  if (!propagate(grid, regions, onSet, n)) return emptyPlan
 
+  // 大棋盘的反证预算（毫秒）
+  const deadline = Date.now() + (n > 9 ? 6000 : 60_000)
+  const maxRounds = n > 9 ? 24 : 162
+  const maxProbeCells = n > 9 ? 48 : size
   let saturated = true
-  for (let round = 0; round < 162; round++) {
+
+  for (let round = 0; round < maxRounds; round++) {
+    if (Date.now() > deadline) {
+      saturated = false
+      break
+    }
     let unknown = -1
-    for (let i = 0; i < 81; i++) {
+    for (let i = 0; i < size; i++) {
       if (grid[i] === 0) {
         unknown = i
         break
@@ -98,13 +114,19 @@ export function planLogicSolve(puzzle: Puzzle, initialState: GameState): LogicPl
       break
     }
     const forced: Array<{ index: number; value: number }> = []
-    for (let i = 0; i < 81; i++) {
+    let probed = 0
+    for (let i = 0; i < size; i++) {
       if (grid[i] !== 0) continue
+      if (probed >= maxProbeCells || Date.now() > deadline) {
+        saturated = false
+        break
+      }
+      probed++
       const feasible: number[] = []
-      for (let v = 1; v <= 9; v++) {
+      for (let v = 1; v <= n; v++) {
         const trial = grid.slice()
         trial[i] = v
-        if (propagate(trial, regions)) feasible.push(v)
+        if (propagate(trial, regions, undefined, n)) feasible.push(v)
       }
       if (feasible.length === 0) return emptyPlan
       if (feasible.length === 1) forced.push({ index: i, value: feasible[0]! })
@@ -119,20 +141,33 @@ export function planLogicSolve(puzzle: Puzzle, initialState: GameState): LogicPl
         emit(index, value, 'probe')
       }
     }
-    if (!propagate(grid, regions, onSet)) return emptyPlan
+    if (!propagate(grid, regions, onSet, n)) return emptyPlan
   }
 
   let stillUnknown = false
-  for (let i = 0; i < 81; i++) {
+  for (let i = 0; i < size; i++) {
     if (grid[i] === 0) {
       stillUnknown = true
       break
     }
   }
   if (stillUnknown) {
-    const found = fallbackSolve(grid, regions, 1_000_000)
-    if (!found) return emptyPlan
-    for (let i = 0; i < 81; i++) {
+    const found = fallbackSolve(grid, regions, n, n > 9 ? 200_000 : 1_000_000)
+    if (!found) {
+      // 大棋盘来回溯不出来时，保留已推出的帧（可回放但未推满）
+      if (n > 9 && frames.length) {
+        const partial: SudokuState = {
+          puzzleId: s.puzzleId,
+          width: s.width,
+          height: s.height,
+          cells: Array.from(displayed),
+          givens: s.givens.slice(),
+        }
+        return { puzzleId: p.id, frames, finalState: partial, ruleSteps: frames.length, saturated: false }
+      }
+      return emptyPlan
+    }
+    for (let i = 0; i < size; i++) {
       if (grid[i] === found[i]) continue
       grid[i] = found[i]!
       emit(i, found[i]!, 'search')
@@ -142,8 +177,8 @@ export function planLogicSolve(puzzle: Puzzle, initialState: GameState): LogicPl
 
   const finalState: SudokuState = {
     puzzleId: s.puzzleId,
-    width: 9,
-    height: 9,
+    width: s.width || n,
+    height: s.height || n,
     cells: Array.from(grid),
     givens: s.givens.slice(),
   }

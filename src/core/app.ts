@@ -8,7 +8,7 @@
  */
 
 import './styles.css'
-import type { GameAdapter, GameState, Move, Puzzle } from './types'
+import type { GameAdapter, GameState, HitTarget, Move, Puzzle } from './types'
 import { $, on } from './ui'
 import { ViewController, clientToViewBox } from './view'
 import { LogicPlayer } from './playback'
@@ -104,6 +104,7 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
 
       <div class="legend">
         <div>${interactionHint}</div>
+        <div><kbd>数字面板</kbd> 选一个数字后点格直接填数 · 再点一次回到循环模式</div>
         <div><kbd>按住拖拽</kbd> 连续涂写 · <kbd>中键/拖拽</kbd> 平移画布</div>
         <div><kbd>滚轮</kbd> 缩放 · <kbd>+</kbd>/<kbd>−</kbd>/<kbd>0</kbd> 放大/缩小/复位</div>
         <div><kbd>Z</kbd> / <kbd>Shift+Z</kbd> 撤销 / 重做</div>
@@ -119,6 +120,7 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
         <button class="btn" id="zoom-in" type="button" title="放大">+</button>
         <button class="btn" id="zoom-reset" type="button">复位</button>
       </div>
+      <div class="value-palette" id="value-palette" hidden></div>
       <div id="board"></div>
     </main>
   </div>
@@ -137,7 +139,11 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
         .join(' → ')
       hintEl.textContent = `点击边循环：${cycle} ｜ ${adapter.custom.hint}`
     } else {
-      hintEl.textContent = `点击循环：${adapter.custom.valueCycle
+      const cycle = (
+        adapter.custom.valueCycleFor?.(meta.customMinW, meta.customMinH) ??
+        adapter.custom.valueCycle
+      )
+      hintEl.textContent = `点击循环：${cycle
         .map((v) => adapter.custom.cellLabel(v))
         .join(' → ')} ｜ ${adapter.custom.hint}`
     }
@@ -156,6 +162,11 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
   let session: Session | null = null
   let pendingDeleteId: string | null = null
   let library: Puzzle[] = [...adapter.builtinPuzzles]
+  /** 键盘操作当前锁定的格子（点击格子后锁定） */
+  let cursor: number | null = null
+  /** 数字面板：已选中的值（null = 清除模式）；paletteActive=false 表示循环模式 */
+  let paletteActive = false
+  let paletteValue: number | null = null
 
   const codec: PuzzleCodec = {
     encode: (p) => adapter.custom.encodePuzzle(p),
@@ -186,6 +197,81 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
     el.className = 'status' + (tone ? ` ${tone}` : '')
   }
 
+  /* ———————————————————— 数字面板 / 光标 ———————————————————— */
+
+  /** 当前题面最大可填值（= max(width, height)） */
+  function paletteMax(): number {
+    if (!session) return 0
+    return Math.max(1, Math.min(36, Math.max(session.puzzle.width, session.puzzle.height)))
+  }
+
+  function paletteLabel(v: number | null): string {
+    if (v === null) return '清除'
+    return v <= 9 ? String(v) : String.fromCharCode(65 + (v - 10))
+  }
+
+  function renderPalette(): void {
+    const el = document.getElementById('value-palette')
+    if (!el) return
+    const n = paletteMax()
+    if (!session || n < 1) {
+      el.hidden = true
+      el.innerHTML = ''
+      return
+    }
+    el.hidden = false
+    const values: Array<number | null> = [...Array.from({ length: n }, (_, i) => i + 1), null]
+    el.innerHTML = values
+      .map((v) => {
+        const active = paletteActive && paletteValue === v
+        const cls = `palette-btn${active ? ' active' : ''}${v === null ? ' clear' : ''}`
+        return `<button class="${cls}" type="button" data-value="${v === null ? 'clear' : v}">${paletteLabel(v)}</button>`
+      })
+      .join('')
+    el.querySelectorAll<HTMLButtonElement>('.palette-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const raw = btn.dataset.value
+        const v = raw === 'clear' ? null : Number(raw)
+        if (paletteActive && paletteValue === v) {
+          paletteActive = false
+          paletteValue = null
+        } else {
+          paletteActive = true
+          paletteValue = v
+        }
+        renderPalette()
+      })
+    })
+  }
+
+  /** 选中格子（只更新高亮，不重绘整盘） */
+  function setCursor(index: number | null): void {
+    cursor = index
+    const board = document.getElementById('board')
+    board?.querySelectorAll('.cell-hit.selected').forEach((el) => el.classList.remove('selected'))
+    if (index !== null) {
+      board?.querySelector(`.cell-hit[data-index="${index}"]`)?.classList.add('selected')
+    }
+  }
+
+  /** 点击一格时该写入的值：面板选中值优先，否则沿用点击循环 */
+  function valueForClick(hit: HitTarget): number {
+    if (!session) return 0
+    if (paletteActive) return paletteValue ?? 0
+    return adapter.cycleValue(session.state, hit)
+  }
+
+  /** 直接给某格写值（键盘 / 数字面板用） */
+  function writeCell(index: number, value: number): void {
+    if (!session) return
+    const before = adapter.valueAt(session.state, index)
+    if (before === value) return
+    pushMove({ index, from: before, to: value })
+    // 预填格 applyMove 会被忽略，撤销掉这条无效 undo 记录
+    if (adapter.valueAt(session.state, index) === before) session.undo.pop()
+    refresh()
+  }
+
   /* ———————————————————— 题库列表 ———————————————————— */
 
   function escapeHtml(text: string): string {
@@ -211,7 +297,7 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
     list.innerHTML = sortedLibrary()
       .map((p) => {
         const active = session?.puzzle.id === p.id ? ' active' : ''
-        const isCustom = p.difficulty === 'custom'
+        const isCustom = p.difficulty === 'custom' && p.editable !== false
         const confirming = pendingDeleteId === p.id
         const actions = isCustom
           ? `<button class="puzzle-act" type="button" data-edit="${escapeHtml(p.id)}" title="编辑题面">编辑</button>` +
@@ -279,10 +365,15 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
     board.innerHTML = svg
     bindBoardEvents()
     view.apply(board.querySelector<SVGSVGElement>('svg.board-svg'))
+    if (cursor !== null && cursor >= session.puzzle.width * session.puzzle.height) {
+      cursor = null
+    }
+    setCursor(cursor)
   }
 
   function refresh(): void {
     renderPuzzleList()
+    renderPalette()
     renderBoardOnly()
     if (!session) return
     const result = currentResult()
@@ -321,6 +412,9 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
       undo: [],
       redo: [],
     }
+    cursor = null
+    paletteActive = false
+    paletteValue = null
     writeLastPuzzle(puzzle.id)
     view.reset()
     refresh()
@@ -380,6 +474,7 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
         const hit = hitAt(e)
         if (hit) {
           if (!session) return
+          setCursor(hit.index)
           const to = adapter.rightClickValue(session.state, hit)
           const from = adapter.valueAt(session.state, hit.index)
           if (from !== to) {
@@ -398,11 +493,13 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
       const hit = hitAt(e)
       if (hit) {
         if (!session) return
+        setCursor(hit.index)
         const from = adapter.valueAt(session.state, hit.index)
-        const to = adapter.cycleValue(session.state, hit)
-        painting = from === to ? null : { kind: 'cycle', to }
+        const to = valueForClick(hit)
+        painting = from === to ? null : { kind: paletteActive ? 'force' : 'cycle', to }
         pending = hit
       } else {
+        setCursor(null)
         painting = null
         pending = null
       }
@@ -421,6 +518,7 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
         if (hit && !painted.has(hit.index)) {
           if (!session) return
           painted.add(hit.index)
+          setCursor(hit.index)
           const from = adapter.valueAt(session.state, hit.index)
           const to =
             painting.kind === 'force' ? painting.to : adapter.cycleValue(session.state, hit)
@@ -791,6 +889,47 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
     }
     // 自定义题板键盘录入优先
     if (custom.handleKey(e)) return
+
+    // 棋盘键盘输入：数字 / Shift+字母 / 退格 / 方向键（需先点选格子）
+    if (session && cursor !== null) {
+      const w = session.puzzle.width
+      const size = session.puzzle.width * session.puzzle.height
+      const n = Math.max(1, Math.min(36, Math.max(session.puzzle.width, session.puzzle.height)))
+      const single = e.key.length === 1
+      if (single && e.key >= '1' && e.key <= '9' && Number(e.key) <= n) {
+        e.preventDefault()
+        writeCell(cursor, Number(e.key))
+        return
+      }
+      if (single && e.shiftKey && e.key >= 'A' && e.key <= 'Z') {
+        const v = 10 + (e.key.charCodeAt(0) - 65)
+        if (v <= n) {
+          e.preventDefault()
+          writeCell(cursor, v)
+          return
+        }
+      }
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault()
+        writeCell(cursor, 0)
+        return
+      }
+      if (e.key === '0') {
+        e.preventDefault()
+        writeCell(cursor, 0)
+        return
+      }
+      if (e.key.startsWith('Arrow')) {
+        e.preventDefault()
+        let next = cursor
+        if (e.key === 'ArrowLeft') next = cursor % w === 0 ? cursor : cursor - 1
+        else if (e.key === 'ArrowRight') next = cursor % w === w - 1 ? cursor : cursor + 1
+        else if (e.key === 'ArrowUp') next = cursor - w >= 0 ? cursor - w : cursor
+        else if (e.key === 'ArrowDown') next = cursor + w < size ? cursor + w : cursor
+        setCursor(next)
+        return
+      }
+    }
 
     const k = e.key.toLowerCase()
     if (k === 'z' && !e.shiftKey) {

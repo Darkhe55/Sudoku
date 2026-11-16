@@ -44,3 +44,16 @@
   fill: transparent;
   stroke: none;
 }
+
+/* —— 大棋盘（16×16 等）：线更细、选区描边更细 —— */
+.board-svg.sd-wide .sd-grid {
+  stroke-width: 0.5;
+}
+
+.board-svg.sd-wide .sd-region {
+  stroke-width: 1.8;
+}
+
+.board-svg.sd-wide .cell-hit.selected {
+  stroke-width: 1.6;
+}

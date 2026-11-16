@@ -117,9 +117,9 @@ if (afterUndo.changed !== 0) {
 
 const customDisabled = await page.locator('#btn-custom').isDisabled()
 console.log('custom disabled:', customDisabled)
-if (!customDisabled) {
+if (customDisabled) {
   failures++
-  console.error('FAIL: 数独 应关闭自定义题板')
+  console.error('FAIL: 数独 应支持自定义题板（9×9 / 16×16）')
 }
 
 await page.screenshot({ path: 'output/playwright/05-verified.png', fullPage: true })

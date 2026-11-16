@@ -14,11 +14,12 @@
  *      平移容差 IoU + 镂空数加权匹配，得到每格候选字符；
  *   4. 自动判定字符集（1-9 / 1-9A-G / 0-9A-F ...），并用行/列/宫互异约束
  *      对低置信度格做小范围一致性修复；
- *   5. 预览识别结果；--verify 调项目 solver 验证唯一解并求参考解；
- *   6. --append 写入 src/game/puzzles-data.ts（只支持当前题库的 9×9；
- *      其他尺寸用 --json 导出，不会被游戏加载）。
+ *   5. 预览识别结果；--verify 调项目 solver 校验唯一解并求参考解；
+ *   6. --append 写入 src/game/imported-puzzles.ts（支持任意 N：9×9 / 16×16 等，
+ *      编号用 36 进制编码，所以 >9 的值 / >8 的宫都能存）。
  *
  * --map：人工覆盖某格，坐标 0 基（列,行），例如 --map "3,4=G,5,1=7"。
+ * --box N：跳过宫格推断，强制按 N×N 标准宫划分（调试用）。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -470,6 +471,7 @@ const regions = (() => {
   }
   return out
 })()
+const regionCount = new Set(regions).size
 const units = []
 for (let y = 0; y < N; y++) units.push(Array.from({ length: N }, (_, x) => y * N + x))
 for (let x = 0; x < N; x++) units.push(Array.from({ length: N }, (_, y) => y * N + x))
@@ -579,142 +581,6 @@ if (conflicts.length) {
   }
 }
 
-// ───────────────────────── 通用求解器（N≠9 时校验用） ─────────────────────────
-function genericCountSolutions(givensArr, n, regionsArr, limit = 2, maxNodes = 400000) {
-  const size = n * n
-  const fullMask = (1 << n) - 1
-  const masks = new Uint32Array(size)
-  const grid = new Array(size).fill(0)
-  for (let i = 0; i < size; i++) {
-    masks[i] = givensArr[i] ? 0 : fullMask
-    grid[i] = givensArr[i] || 0
-  }
-  const unitList = []
-  for (let y = 0; y < n; y++) unitList.push(Array.from({ length: n }, (_, x) => y * n + x))
-  for (let x = 0; x < n; x++) unitList.push(Array.from({ length: n }, (_, y) => y * n + x))
-  const regionIds = [...new Set(regionsArr)]
-  for (const id of regionIds) unitList.push(regionsArr.map((r, i) => (r === id ? i : -1)).filter((i) => i >= 0))
-  const peers = Array.from({ length: size }, () => new Set())
-  for (const unit of unitList) for (const a of unit) for (const b of unit) if (a !== b) peers[a].add(b)
-  const peerList = peers.map((s) => [...s])
-  let nodes = 0
-  let timedOut = false
-  const solutions = []
-
-  const propagate = (startList) => {
-    const queue = startList.slice()
-    let changed = true
-    while (changed) {
-      changed = false
-      while (queue.length) {
-        const cur = queue.pop()
-        const bit = 1 << (grid[cur] - 1)
-        for (const p of peerList[cur]) {
-          if (grid[p]) {
-            if (grid[p] === grid[cur]) return false
-            continue
-          }
-          if (!(masks[p] & bit)) continue
-          masks[p] &= ~bit
-          const m = masks[p]
-          if (m === 0) return false
-          if ((m & (m - 1)) === 0) {
-            grid[p] = 32 - Math.clz32(m)
-            masks[p] = 0
-            queue.push(p)
-            changed = true
-          }
-        }
-      }
-      // 唯一候选（hidden single）：某个数字在某单元只剩一个位置
-      for (const unit of unitList) {
-        for (let v = 1; v <= n; v++) {
-          const bit = 1 << (v - 1)
-          let count = 0
-          let spot = -1
-          let placed = false
-          for (const i of unit) {
-            if (grid[i] === v) {
-              placed = true
-              break
-            }
-            if (grid[i]) continue
-            if (masks[i] & bit) {
-              count++
-              spot = i
-            }
-          }
-          if (placed) continue
-          if (count === 0) return false
-          if (count === 1) {
-            grid[spot] = v
-            masks[spot] = 0
-            queue.push(spot)
-            changed = true
-          }
-        }
-      }
-    }
-    return true
-  }
-  for (let i = 0; i < size; i++) {
-    if (!grid[i]) continue
-    if (!propagate([i])) return { count: 0, nodes, timedOut: false, first: null }
-  }
-  const gridSave = () => grid.slice()
-  const maskSave = () => masks.slice()
-  const restore = (g, m) => {
-    for (let i = 0; i < size; i++) {
-      grid[i] = g[i]
-      masks[i] = m[i]
-    }
-  }
-  const dfs = () => {
-    if (solutions.length >= limit || timedOut) return
-    if (++nodes > maxNodes) {
-      timedOut = true
-      return
-    }
-    let choice = -1
-    let bestCount = n + 1
-    for (let i = 0; i < size; i++) {
-      if (grid[i]) continue
-      let c = 0
-      let m = masks[i]
-      while (m) {
-        m &= m - 1
-        c++
-      }
-      if (c === 0) return
-      if (c < bestCount) {
-        bestCount = c
-        choice = i
-        if (c === 1) break
-      }
-    }
-    if (choice < 0) {
-      solutions.push(grid.slice())
-      return
-    }
-    const g0 = gridSave()
-    const m0 = maskSave()
-    let bits = masks[choice]
-    while (bits) {
-      const bit = bits & -bits
-      bits ^= bit
-      restore(g0, m0)
-      const v = 32 - Math.clz32(bit)
-      grid[choice] = v
-      masks[choice] = 0
-      if (propagate([choice])) dfs()
-      if (solutions.length >= limit || timedOut) break
-    }
-    restore(g0, m0)
-  }
-  dfs()
-  return { count: solutions.length, nodes, timedOut, first: solutions[0] ?? null }
-}
-
 // ───────────────────────── 预览 ─────────────────────────
 const clues = givens.filter(Boolean).length
 const charsUsed = new Map()
@@ -724,7 +590,7 @@ console.log(
     `格距 ${analysis.cellX}×${analysis.cellY}px，字符集 ${charset.join('')}`,
 )
 console.log(`[import] 预填 ${clues}/${N * N} 格：${[...charsUsed].map(([ch, n]) => `${ch}×${n}`).join(' ')}`)
-if (box) console.log(`[import] 宫格按 ${box}×${box} 划分（--box 可覆盖）`)
+if (regionCount > 1) console.log(`[import] 宫：${regionCount} 个（规则宫划分）`)
 console.log('[import] 识别结果：')
 for (let y = 0; y < N; y++) {
   let line = ''
@@ -742,50 +608,40 @@ if (warnings.length) {
   if (warnings.length > 30) console.log(`  … 其余 ${warnings.length - 30} 条略`)
 }
 
-// ───────────────────────── 校验 ─────────────────────────
+// ───────────────────────── 校验（项目 solver，支持任意 N） ─────────────────────────
 const valueOf = (ch) => charset.indexOf(ch) + 1
 const charOf = (v) => charset[v - 1] ?? String(v)
+const B36 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+/** 数值 → 36 进制字符（题库 board/solution 编码；>9 的值 / >8 的宫都靠它） */
+const b36 = (v) => B36[v] ?? ''
 let solution = null // 数值数组 1..N
 let unique = false
 if (verify || append) {
   const givensArr = givens.map((ch) => (ch ? valueOf(ch) : 0))
-  if (N === 9) {
-    const { countSolutions, solvePuzzle } = await import('../src/game/solver.ts')
-    const t0 = Date.now()
-    const counted = countSolutions(givensArr, regions, 2, 800000)
-    if (counted.timedOut) {
-      console.warn(`[import] 唯一性检查超时（${counted.nodes} 节点），仅警告`)
-    } else if (counted.count !== 1) {
-      console.warn(`[import] 解不唯一：找到 ${counted.count} 个（可能是识别错误）`)
-    } else {
-      unique = true
-      const puzzle = {
-        id: 'import-temp',
-        name: 'import-temp',
-        width: 9,
-        height: 9,
-        difficulty: 'hard',
-        givens: givensArr,
-        regions,
-      }
-      const solved = solvePuzzle(puzzle, 1500000)
-      if (solved.solution) solution = solved.solution.cells.slice()
-      console.log(
-        `[import] 项目 solver 校验：唯一解 ✓（${Date.now() - t0}ms，${counted.nodes} 节点）`,
-      )
-    }
+  const { countSolutions, solvePuzzle } = await import('../src/game/solver.ts')
+  const t0 = Date.now()
+  const maxNodes = N > 9 ? 600000 : 800000
+  const counted = countSolutions(givensArr, regions, 2, maxNodes)
+  if (counted.timedOut) {
+    console.warn(`[import] 唯一性检查超时（${counted.nodes} 节点），仅警告`)
+  } else if (counted.count !== 1) {
+    console.warn(`[import] 解不唯一：找到 ${counted.count} 个（可能是识别错误）`)
   } else {
-    const t0 = Date.now()
-    const out = genericCountSolutions(givensArr, N, regions, 2, 500000)
-    if (out.timedOut) {
-      console.warn(`[import] 通用校验超时（${out.nodes} 节点），仅警告`)
-    } else if (out.count !== 1) {
-      console.warn(`[import] 通用校验：解不唯一（${out.count} 个）`)
-    } else {
-      unique = true
-      solution = out.first
-      console.log(`[import] 通用 solver 校验（项目 solver 仅支持 9×9）：唯一解 ✓（${Date.now() - t0}ms）`)
+    unique = true
+    const puzzle = {
+      id: 'import-temp',
+      name: 'import-temp',
+      width: N,
+      height: N,
+      difficulty: 'hard',
+      givens: givensArr,
+      regions,
     }
+    const solved = solvePuzzle(puzzle, 1500000)
+    if (solved.solution) solution = solved.solution.cells.slice()
+    console.log(
+      `[import] 项目 solver 校验：唯一解 ✓（${Date.now() - t0}ms，${counted.nodes} 节点）`,
+    )
   }
 }
 if (solution) {
@@ -825,33 +681,33 @@ if (jsonOut) {
 if (append) {
   if (dry) {
     console.log('[import] --dry：跳过写入')
-  } else if (N !== 9) {
-    console.error(
-      `[import] 当前题库只支持 9×9（src/game/puzzles.ts 的 decodePuzzle 硬编码 81 格），` +
-        `无法写入 ${N}×${N}。识别结果已预览；可用 --json 导出，或在支持该尺寸的游戏中使用。`,
-    )
-    process.exitCode = 2
   } else {
-    const givensText = givens.map((ch) => (ch ? ch : '0')).join('')
-    const regionText = regions.join('')
+    const givensText = givens.map((ch) => (ch ? b36(valueOf(ch)) : '0')).join('')
+    const regionText = regions.map((r) => b36(r)).join('')
     const board = `${givensText}|${regionText}`
-    const solutionText = solution ? solution.join('') : ''
+    const solutionText = solution ? solution.map((v) => b36(v)).join('') : ''
     if (!unique) {
       console.warn('[import] 未确认唯一解，条目的参考解留空（可能导致 npm run check 警告/报错）')
     }
     const entry =
-      `  { id: ${JSON.stringify(id)}, name: ${JSON.stringify(name)}, width: 9, height: 9, ` +
+      `  { id: ${JSON.stringify(id)}, name: ${JSON.stringify(name)}, width: ${N}, height: ${N}, ` +
       `difficulty: 'custom', series: ${JSON.stringify(series)}, board: ${JSON.stringify(board)}, ` +
       `solution: ${JSON.stringify(solutionText)} },\n`
-    const dataFile = path.resolve('src/game/puzzles-data.ts')
+    const dataFile = path.resolve('src/game/imported-puzzles.ts')
+    if (!existsSync(dataFile)) {
+      writeFileSync(
+        dataFile,
+        "import type { RawPuzzle } from './puzzles.ts'\\n\nexport const IMPORTED_PUZZLES: RawPuzzle[] = [\n]\n",
+      )
+    }
     let text = readFileSync(dataFile, 'utf8').replace(/\r\n/g, '\n')
     const marker = text.lastIndexOf('\n]')
-    if (marker < 0) throw new Error('puzzles-data.ts 格式异常：找不到结尾 ]')
+    if (marker < 0) throw new Error('imported-puzzles.ts 格式异常：找不到结尾 ]')
     text = text.slice(0, marker + 1) + entry + text.slice(marker + 1)
     writeFileSync(dataFile, text)
-    console.log(`[import] 已写入 ${dataFile}：${id} ${name}`)
-    console.log('[import] 提示：npm run gen 会重新生成题库（覆盖本次写入），导入题请先备份。')
+    console.log(`[import] 已写入 ${dataFile}：${id} ${name}（${N}×${N}，${regionCount} 个宫）`)
+    console.log('[import] 提示：npm run gen 只重写 puzzles-data.ts，本文件中的导入题不会被覆盖。')
   }
 } else {
-  console.log('[import] 预览模式（未写入）。加 --append 写入 src/game/puzzles-data.ts。')
+  console.log('[import] 预览模式（未写入）。加 --append 写入 src/game/imported-puzzles.ts。')
 }
