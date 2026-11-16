@@ -74,6 +74,24 @@ src/
     puzzles.ts / puzzles-data.ts  题库加载与静态题库
 ```
 
+## 从图片导入题库
+
+```bash
+npm run import-image -- month.png --verify              # 预览识别结果并校验唯一解
+npm run import-image -- month.png --append              # 写入题库（需唯一解）
+npm run import-image -- puzzle.png --size 9 --append    # 指定网格尺寸
+npm run import-image -- puzzle.png --json out.json      # 非 9×9 题面导出 JSON
+npm run import-image -- puzzle.png --map "3,4=5,5,1=7"  # 人工覆盖误识别的格子
+```
+
+说明：
+
+- Playwright + Edge 自动识别网格线、数字/字母字形（支持 9×9 / 16×16 等），识别结果先在终端预览。
+- `--map` 人工覆盖格子，坐标 0 基，格式 `x,y=字符`（列,行），可修正个别误识别。
+- `--verify` 调项目 solver 校验唯一解并生成参考解；`--append` 写入 `src/game/puzzles-data.ts`。
+- 当前游戏题库只支持 9×9（`src/game/puzzles.ts` 固定 81 格），其他尺寸只能预览或用 `--json` 导出。
+- `npm run gen` 会重新生成 `puzzles-data.ts` 并覆盖导入的题，重要题面请先另存。
+
 ## 命令
 
 ```bash
