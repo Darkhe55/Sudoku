@@ -8,7 +8,7 @@
  */
 
 import './styles.css'
-import type { GameAdapter, GameState, HitTarget, Move, Puzzle } from './types'
+import type { GameAdapter, GameState, Move, Puzzle } from './types'
 import { $, on } from './ui'
 import { ViewController, clientToViewBox } from './view'
 import { LogicPlayer } from './playback'
@@ -49,7 +49,7 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
       ? '<kbd>左键</kbd> 画边 · <kbd>右键</kbd> 清除'
       : meta.targetKind === 'vertex'
         ? '<kbd>左键</kbd> 标记顶点 · <kbd>右键</kbd> 清除'
-        : '<kbd>左键</kbd> 循环标记 · <kbd>右键</kbd> 直接标排除')
+        : '<kbd>左键</kbd> 选中格子 · <kbd>数字/面板</kbd> 填入选中格')
 
   /* ———————————————————— 静态 DOM ———————————————————— */
 
@@ -104,9 +104,9 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
 
       <div class="legend">
         <div>${interactionHint}</div>
-        <div><kbd>数字面板</kbd> 选一个数字后点格直接填数 · 再点一次回到循环模式</div>
-        <div><kbd>按住拖拽</kbd> 连续涂写 · <kbd>中键/拖拽</kbd> 平移画布</div>
-        <div><kbd>滚轮</kbd> 缩放 · <kbd>+</kbd>/<kbd>−</kbd>/<kbd>0</kbd> 放大/缩小/复位</div>
+        <div><kbd>数字面板</kbd> 先选格，再点数字写入 · 「清除」清空选中格</div>
+        <div><kbd>方向键</kbd> 移动选中格 · 输入后不自动跳格</div>
+        <div><kbd>滚轮</kbd> 缩放 · <kbd>中键/空白拖拽</kbd> 平移画布 · <kbd>+</kbd>/<kbd>−</kbd>/<kbd>0</kbd> 放大/缩小/复位</div>
         <div><kbd>Z</kbd> / <kbd>Shift+Z</kbd> 撤销 / 重做</div>
         <div><kbd>C</kbd> 检查 · <kbd>Esc</kbd> 清空 · <kbd>L</kbd> 逻辑解题/停止回放 · <kbd>P</kbd> 暂停/继续</div>
         <div><kbd>R</kbd> 随机 · <kbd>M</kbd> 音效开关</div>
@@ -120,8 +120,10 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
         <button class="btn" id="zoom-in" type="button" title="放大">+</button>
         <button class="btn" id="zoom-reset" type="button">复位</button>
       </div>
-      <div class="value-palette" id="value-palette" hidden></div>
-      <div id="board"></div>
+      <div class="board-stage">
+        <div class="value-palette" id="value-palette" hidden></div>
+        <div id="board"></div>
+      </div>
     </main>
   </div>
 
@@ -162,11 +164,8 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
   let session: Session | null = null
   let pendingDeleteId: string | null = null
   let library: Puzzle[] = [...adapter.builtinPuzzles]
-  /** 键盘操作当前锁定的格子（点击格子后锁定） */
+  /** 当前选中的格子：左键/右键点格选中；键盘与数字面板都写入这里 */
   let cursor: number | null = null
-  /** 数字面板：已选中的值（null = 清除模式）；paletteActive=false 表示循环模式 */
-  let paletteActive = false
-  let paletteValue: number | null = null
 
   const codec: PuzzleCodec = {
     encode: (p) => adapter.custom.encodePuzzle(p),
@@ -210,6 +209,10 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
     return v <= 9 ? String(v) : String.fromCharCode(65 + (v - 10))
   }
 
+  /**
+   * 数字面板：先选中格子，再点数字按钮直接写入该格；「清除」清空选中格。
+   * 没有选中格时只提示、不落子（不再有「先选数字再点格」的循环模式）。
+   */
   function renderPalette(): void {
     const el = document.getElementById('value-palette')
     if (!el) return
@@ -220,31 +223,43 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
       return
     }
     el.hidden = false
+    el.classList.toggle('wide', n > 9)
     const values: Array<number | null> = [...Array.from({ length: n }, (_, i) => i + 1), null]
     el.innerHTML = values
       .map((v) => {
-        const active = paletteActive && paletteValue === v
-        const cls = `palette-btn${active ? ' active' : ''}${v === null ? ' clear' : ''}`
-        return `<button class="${cls}" type="button" data-value="${v === null ? 'clear' : v}">${paletteLabel(v)}</button>`
+        const cls = `palette-btn${v === null ? ' clear' : ''}`
+        const label = paletteLabel(v)
+        const title = v === null ? '清空当前选中格' : `把 ${label} 写入当前选中格`
+        return `<button class="${cls}" type="button" data-value="${v === null ? 'clear' : v}" title="${title}">${label}</button>`
       })
       .join('')
     el.querySelectorAll<HTMLButtonElement>('.palette-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
+        resumeAudio()
         const raw = btn.dataset.value
-        const v = raw === 'clear' ? null : Number(raw)
-        if (paletteActive && paletteValue === v) {
-          paletteActive = false
-          paletteValue = null
-        } else {
-          paletteActive = true
-          paletteValue = v
+        const value = raw === 'clear' ? 0 : Number(raw)
+        if (cursor === null) {
+          setStatus('先点选一个格子，再点数字按钮填入。', 'bad')
+          return
         }
-        renderPalette()
+        writeCell(cursor, value)
       })
+    })
+    markPaletteCurrent()
+  }
+
+  /** 面板高亮：当前选中格已有的数字（选中格变化时同步） */
+  function markPaletteCurrent(): void {
+    const el = document.getElementById('value-palette')
+    if (!el) return
+    const current = session && cursor !== null ? adapter.valueAt(session.state, cursor) : 0
+    el.querySelectorAll<HTMLButtonElement>('.palette-btn').forEach((btn) => {
+      const raw = btn.dataset.value
+      btn.classList.toggle('active', raw !== 'clear' && Number(raw) === current)
     })
   }
 
-  /** 选中格子（只更新高亮，不重绘整盘） */
+  /** 选中格子（只更新高亮，不重绘整盘；输入后保持选中、不自动跳格） */
   function setCursor(index: number | null): void {
     cursor = index
     const board = document.getElementById('board')
@@ -252,13 +267,7 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
     if (index !== null) {
       board?.querySelector(`.cell-hit[data-index="${index}"]`)?.classList.add('selected')
     }
-  }
-
-  /** 点击一格时该写入的值：面板选中值优先，否则沿用点击循环 */
-  function valueForClick(hit: HitTarget): number {
-    if (!session) return 0
-    if (paletteActive) return paletteValue ?? 0
-    return adapter.cycleValue(session.state, hit)
+    markPaletteCurrent()
   }
 
   /** 直接给某格写值（键盘 / 数字面板用） */
@@ -373,8 +382,8 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
 
   function refresh(): void {
     renderPuzzleList()
-    renderPalette()
     renderBoardOnly()
+    renderPalette()
     if (!session) return
     const result = currentResult()
     if (!result) return
@@ -413,8 +422,6 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
       redo: [],
     }
     cursor = null
-    paletteActive = false
-    paletteValue = null
     writeLastPuzzle(puzzle.id)
     view.reset()
     refresh()
@@ -443,11 +450,10 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
     })
 
     let dragging = false
+    /** 本次拖动是否为平移（中键按下，或左键从空白处起拖） */
+    let panning = false
     let dragMoved = false
     let lastClient = { x: 0, y: 0 }
-    let pending: { index: number } | null = null
-    let painting: { kind: 'cycle' | 'force'; to: number } | null = null
-    let painted = new Set<number>()
 
     const hitAt = (e: PointerEvent) => {
       if (!session) return null
@@ -475,73 +481,38 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
         // 中键拖动平移（滚轮缩放后也可用）
         e.preventDefault()
         dragging = true
-        dragMoved = true
-        painting = null
-        pending = null
+        panning = true
+        dragMoved = false
         lastClient = { x: e.clientX, y: e.clientY }
         svg.setPointerCapture(e.pointerId)
         return
       }
       if (e.button === 2) {
+        // 右键不再是数字输入方式：只选中格子，不写入
         const hit = hitAt(e)
-        if (hit) {
-          if (!session) return
-          setCursor(hit.index)
-          const to = adapter.rightClickValue(session.state, hit)
-          const from = adapter.valueAt(session.state, hit.index)
-          if (from !== to) {
-            pushMove({ index: hit.index, from, to })
-            refresh()
-          }
-        }
+        if (hit) setCursor(hit.index)
         return
       }
       if (e.button !== 0) return
 
+      // 左键：命中格子只选中（不写入、不循环、不拖动涂写）；
+      // 点空白处取消选中，并允许从空白处拖动平移
+      const hit = hitAt(e)
       lastClient = { x: e.clientX, y: e.clientY }
       dragging = true
+      panning = !hit
       dragMoved = false
-      painted = new Set()
-      const hit = hitAt(e)
-      if (hit) {
-        if (!session) return
-        setCursor(hit.index)
-        const from = adapter.valueAt(session.state, hit.index)
-        const to = valueForClick(hit)
-        painting = from === to ? null : { kind: paletteActive ? 'force' : 'cycle', to }
-        pending = hit
-      } else {
-        setCursor(null)
-        painting = null
-        pending = null
-      }
+      setCursor(hit ? hit.index : null)
       svg.setPointerCapture(e.pointerId)
     })
 
     svg.addEventListener('pointermove', (e) => {
-      if (!dragging) return
+      // 只有平移拖动会响应；左键在格子上拖动不做任何写入
+      if (!dragging || !panning) return
       const dx = e.clientX - lastClient.x
       const dy = e.clientY - lastClient.y
       if (!dragMoved && Math.hypot(dx, dy) < 6) return
       dragMoved = true
-      if (painting) {
-        // 拖拽涂写：沿途命中即落子
-        const hit = hitAt(e)
-        if (hit && !painted.has(hit.index)) {
-          if (!session) return
-          painted.add(hit.index)
-          setCursor(hit.index)
-          const from = adapter.valueAt(session.state, hit.index)
-          const to =
-            painting.kind === 'force' ? painting.to : adapter.cycleValue(session.state, hit)
-          if (from !== to) {
-            pushMove({ index: hit.index, from, to })
-            refresh()
-          }
-        }
-        return
-      }
-      // 平移
       const rect = svg.getBoundingClientRect()
       view.panBy(dx, dy, svg, rect.width, rect.height)
       lastClient = { x: e.clientX, y: e.clientY }
@@ -550,22 +521,13 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
     const endDrag = (e: PointerEvent) => {
       if (!dragging) return
       dragging = false
+      panning = false
+      dragMoved = false
       try {
         svg.releasePointerCapture(e.pointerId)
       } catch {
         /* ignore */
       }
-      if (!dragMoved && pending && painting) {
-        if (!session) return
-        const from = adapter.valueAt(session.state, pending.index)
-        const to = painting.to
-        if (from !== to) {
-          pushMove({ index: pending.index, from, to })
-          refresh()
-        }
-      }
-      pending = null
-      painting = null
     }
     svg.addEventListener('pointerup', endDrag)
     svg.addEventListener('pointercancel', endDrag)

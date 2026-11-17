@@ -89,11 +89,13 @@ export function valueAt(state: GameState, index: number): number {
 export function serializeState(state: GameState): Record<string, unknown> {
   const s = asSudokuState(state)
   return {
-    version: 1,
+    version: 2,
     puzzleId: s.puzzleId,
     width: s.width,
     height: s.height,
     cells: encodeCells(s.cells),
+    // 预填格也一起存档，刷新后仍能恢复「题面给定格不能改」的保护
+    givens: encodeCells(s.givens),
   }
 }
 
@@ -120,12 +122,18 @@ export function deserializeState(data: Record<string, unknown>): SudokuState | n
   const size = n * n
   const cells = readCells(data.cells, size, n)
   if (!cells) return null
+  // 旧版进度没有 givens 字段：读不到时按 0（不保护）兼容旧存档
+  const givens = readCells(data.givens, size, n)
+  if (givens) {
+    // 存档里若预填格被改过，以预填值为准纠正回来
+    for (let i = 0; i < size; i++) if (givens[i] !== 0) cells[i] = givens[i]
+  }
   return {
     puzzleId: data.puzzleId,
     width: n,
     height: n,
     cells,
-    givens: new Array<number>(size).fill(0),
+    givens: givens ?? new Array<number>(size).fill(0),
   }
 }
 
