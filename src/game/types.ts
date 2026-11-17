@@ -113,6 +113,8 @@ export interface SudokuPuzzle extends Puzzle {
 export interface SudokuState extends GameState {
   cells: number[]
   givens: number[]
+  /** 每格候选数 bitmask（bit v-1 = 候选 v）；可选，缺省视为 0 */
+  notes?: number[]
 }
 
 export interface DuplicateIssue {

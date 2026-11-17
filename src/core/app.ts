@@ -104,7 +104,7 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
 
       <div class="legend">
         <div>${interactionHint}</div>
-        <div><kbd>数字面板</kbd> 先选格，再点数字写入 · 「清除」清空选中格</div>
+        <div><kbd>数字面板</kbd> 先选格，再点数字写入 · 「清除」清空 · 「笔记」切换候选数（<kbd>N</kbd>）</div>
         <div><kbd>方向键</kbd> 移动选中格 · 输入后不自动跳格</div>
         <div><kbd>滚轮</kbd> 缩放 · <kbd>中键/空白拖拽</kbd> 平移画布 · <kbd>+</kbd>/<kbd>−</kbd>/<kbd>0</kbd> 放大/缩小/复位</div>
         <div><kbd>Z</kbd> / <kbd>Shift+Z</kbd> 撤销 / 重做</div>
@@ -166,6 +166,8 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
   let library: Puzzle[] = [...adapter.builtinPuzzles]
   /** 当前选中的格子：左键/右键点格选中；键盘与数字面板都写入这里 */
   let cursor: number | null = null
+  /** 笔记（候选数）模式：开启后数字按钮/数字键只切换候选数，不写正式数字 */
+  let notesMode = false
 
   const codec: PuzzleCodec = {
     encode: (p) => adapter.custom.encodePuzzle(p),
@@ -211,6 +213,7 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
 
   /**
    * 数字面板：先选中格子，再点数字按钮直接写入该格；「清除」清空选中格。
+   * 「笔记」按钮（或 N 键）切换候选数模式：开启后数字按钮只切换该格候选数。
    * 没有选中格时只提示、不落子（不再有「先选数字再点格」的循环模式）。
    */
   function renderPalette(): void {
@@ -225,21 +228,37 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
     el.hidden = false
     el.classList.toggle('wide', n > 9)
     const values: Array<number | null> = [...Array.from({ length: n }, (_, i) => i + 1), null]
-    el.innerHTML = values
+    const valueButtons = values
       .map((v) => {
         const cls = `palette-btn${v === null ? ' clear' : ''}`
         const label = paletteLabel(v)
-        const title = v === null ? '清空当前选中格' : `把 ${label} 写入当前选中格`
+        const title =
+          v === null
+            ? '清空当前选中格（笔记模式下清空候选数）'
+            : notesMode
+              ? `切换候选数 ${label}`
+              : `把 ${label} 写入当前选中格`
         return `<button class="${cls}" type="button" data-value="${v === null ? 'clear' : v}" title="${title}">${label}</button>`
       })
       .join('')
+    const notesButton = `<button class="palette-btn notes${notesMode ? ' active' : ''}" type="button" data-value="notes" title="笔记模式：数字只切换候选数（快捷键 N）">笔记</button>`
+    el.innerHTML = valueButtons + notesButton
     el.querySelectorAll<HTMLButtonElement>('.palette-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
         resumeAudio()
         const raw = btn.dataset.value
-        const value = raw === 'clear' ? 0 : Number(raw)
+        if (raw === 'notes') {
+          toggleNotesMode()
+          return
+        }
         if (cursor === null) {
           setStatus('先点选一个格子，再点数字按钮填入。', 'bad')
+          return
+        }
+        const value = raw === 'clear' ? 0 : Number(raw)
+        if (notesMode) {
+          if (value === 0) clearNotes(cursor)
+          else toggleNote(cursor, value)
           return
         }
         writeCell(cursor, value)
@@ -248,14 +267,65 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
     markPaletteCurrent()
   }
 
-  /** 面板高亮：当前选中格已有的数字（选中格变化时同步） */
+  /** 切换笔记（候选数）模式：数字按钮/数字键改为切换候选数 */
+  function toggleNotesMode(): void {
+    notesMode = !notesMode
+    renderPalette()
+    setStatus(
+      notesMode
+        ? '笔记模式：开（数字按钮/数字键切换候选数，N 关闭）'
+        : '笔记模式：关（数字按钮/数字键写入正式数字）',
+    )
+  }
+
+  /** 候选数 v 的 bitmask 位（bit v-1） */
+  function noteBit(value: number): number {
+    return 2 ** (value - 1)
+  }
+
+  /** 切换某格候选数；只对空格生效（given 格/已有正式数字格会忽略） */
+  function toggleNote(index: number, value: number): void {
+    if (!session) return
+    const before = adapter.noteMaskAt(session.state, index)
+    const after = before ^ noteBit(value)
+    if (before === after) return
+    pushMove({ index, from: before, to: after, kind: 'note' })
+    if (adapter.noteMaskAt(session.state, index) === before) {
+      // 空格以外的格子 applyMove 会忽略，撤销掉这条无效 undo 记录
+      session.undo.pop()
+      setStatus('候选数只能添加在空格上。', 'bad')
+      return
+    }
+    refresh()
+  }
+
+  /** 清空某格候选数（支持撤销 / 重做） */
+  function clearNotes(index: number): void {
+    if (!session) return
+    const before = adapter.noteMaskAt(session.state, index)
+    if (before === 0) return
+    pushMove({ index, from: before, to: 0, kind: 'note' })
+    if (adapter.noteMaskAt(session.state, index) === before) session.undo.pop()
+    refresh()
+  }
+
+  /** 面板高亮：正式数字模式高亮当前格数字；笔记模式高亮当前格已有候选 */
   function markPaletteCurrent(): void {
     const el = document.getElementById('value-palette')
     if (!el) return
     const current = session && cursor !== null ? adapter.valueAt(session.state, cursor) : 0
+    const mask = session && cursor !== null && notesMode ? adapter.noteMaskAt(session.state, cursor) : 0
     el.querySelectorAll<HTMLButtonElement>('.palette-btn').forEach((btn) => {
       const raw = btn.dataset.value
-      btn.classList.toggle('active', raw !== 'clear' && Number(raw) === current)
+      if (raw === 'notes') {
+        btn.classList.toggle('active', notesMode)
+        return
+      }
+      const v = raw === 'clear' ? 0 : Number(raw)
+      const active =
+        v !== 0 &&
+        (notesMode ? Math.floor(mask / noteBit(v)) % 2 === 1 : v === current)
+      btn.classList.toggle('active', active)
     })
   }
 
@@ -274,7 +344,11 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
   function writeCell(index: number, value: number): void {
     if (!session) return
     const before = adapter.valueAt(session.state, index)
-    if (before === value) return
+    if (before === value) {
+      // 重复按「清除」时，把该格残留的候选数也一起清掉
+      if (value === 0) clearNotes(index)
+      return
+    }
     pushMove({ index, from: before, to: value })
     // 预填格 applyMove 会被忽略，撤销掉这条无效 undo 记录
     if (adapter.valueAt(session.state, index) === before) session.undo.pop()
@@ -422,6 +496,7 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
       redo: [],
     }
     cursor = null
+    notesMode = false
     writeLastPuzzle(puzzle.id)
     view.reset()
     refresh()
@@ -864,6 +939,20 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
     // 自定义题板键盘录入优先
     if (custom.handleKey(e)) return
 
+    // N 键切换笔记（候选数）模式
+    if (
+      session &&
+      !custom.isOpen() &&
+      (e.key === 'n' || e.key === 'N') &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey
+    ) {
+      e.preventDefault()
+      toggleNotesMode()
+      return
+    }
+
     // 棋盘键盘输入：数字 / Shift+字母 / 退格 / 方向键（需先点选格子）
     if (session && cursor !== null) {
       const w = session.puzzle.width
@@ -872,25 +961,29 @@ export function createApp(root: HTMLElement, adapter: GameAdapter) {
       const single = e.key.length === 1
       if (single && e.key >= '1' && e.key <= '9' && Number(e.key) <= n) {
         e.preventDefault()
-        writeCell(cursor, Number(e.key))
+        if (notesMode) toggleNote(cursor, Number(e.key))
+        else writeCell(cursor, Number(e.key))
         return
       }
       if (single && e.shiftKey && e.key >= 'A' && e.key <= 'Z') {
         const v = 10 + (e.key.charCodeAt(0) - 65)
         if (v <= n) {
           e.preventDefault()
-          writeCell(cursor, v)
+          if (notesMode) toggleNote(cursor, v)
+          else writeCell(cursor, v)
           return
         }
       }
       if (e.key === 'Backspace' || e.key === 'Delete') {
         e.preventDefault()
-        writeCell(cursor, 0)
+        if (notesMode) clearNotes(cursor)
+        else writeCell(cursor, 0)
         return
       }
       if (e.key === '0') {
         e.preventDefault()
-        writeCell(cursor, 0)
+        if (notesMode) clearNotes(cursor)
+        else writeCell(cursor, 0)
         return
       }
       if (e.key.startsWith('Arrow')) {

@@ -732,6 +732,19 @@ button.btn:disabled {
   color: #fff;
 }
 
+.palette-btn.notes {
+  margin-top: 2px;
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.palette-btn.notes.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
 @media (max-width: 860px) {
   /* 窄屏：数字面板回到棋盘上方，横向排列 */
   .board-stage {

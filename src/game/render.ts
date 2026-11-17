@@ -83,6 +83,30 @@ export function renderBoard(
     )
   }
 
+  // 候选数（笔记）：只画在空格上，3×3 小格；大棋盘改两列小字
+  const noteCols = wide ? 2 : 3
+  const noteRows = Math.ceil(span / noteCols)
+  const noteFont = (m.cell * (wide ? 0.2 : 0.24)).toFixed(2)
+  const noteSlotW = cw / noteCols
+  const noteSlotH = ch / noteRows
+  for (let i = 0; i < size; i++) {
+    if ((s.cells[i] ?? 0) !== 0) continue
+    const mask = s.notes?.[i] ?? 0
+    if (!mask) continue
+    const c = cellCenter(m, i)
+    for (let v = 1; v <= span; v++) {
+      if (Math.floor(mask / 2 ** (v - 1)) % 2 !== 1) continue
+      const slot = v - 1
+      const col = slot % noteCols
+      const row = Math.floor(slot / noteCols)
+      const nx = c.x + (col - (noteCols - 1) / 2) * noteSlotW
+      const ny = c.y + (row - (noteRows - 1) / 2) * noteSlotH
+      parts.push(
+        `<text class="sd-note" x="${nx.toFixed(2)}" y="${(ny + 1).toFixed(2)}" style="font-size:${noteFont}px">${symbolOf(v)}</text>`,
+      )
+    }
+  }
+
   for (let i = 0; i < size; i++) {
     const x = o.x + (i % cols) * cw
     const y = o.y + Math.floor(i / cols) * ch

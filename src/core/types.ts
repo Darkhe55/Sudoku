@@ -42,6 +42,11 @@ export interface Move {
   index: number
   from: number
   to: number
+  /**
+   * 可选：移动类型。缺省 'cell' = 写格子值；'note' = 写候选数（from/to 是候选 bitmask）。
+   * 由具体游戏的 applyMove / invertMove 解释，核心只负责转发与撤销。
+   */
+  kind?: 'cell' | 'note'
 }
 
 /** 校验结果：游戏扩展错误明细，至少给出 solved */
@@ -239,6 +244,8 @@ export interface GameAdapter {
   invertMove(move: Move): Move
   /** 读取某索引当前值（state 内部数组的取值入口） */
   valueAt(state: GameState, index: number): number
+  /** 读取某格候选数 bitmask（bit v-1 = 候选 v）；不支持笔记返回 0 */
+  noteMaskAt(state: GameState, index: number): number
   serializeState(state: GameState): Record<string, unknown>
   deserializeState(data: Record<string, unknown>): GameState | null
 
