@@ -6,14 +6,39 @@
  */
 
 import type { GameState, LogicPlan, PlaybackFrame, Puzzle } from '../core/types'
-import { isValidSolution, propagate, type RuleKind } from './rules.ts'
+import { isValidSolution, propagate, type PropagateOptions, type RuleKind } from './rules.ts'
+import { countSolutions } from './solver.ts'
 import { asSudokuPuzzle, asSudokuState, squareSize, type SudokuState } from './types.ts'
 
+/**
+ * 规则分类（回放里显示为「规则N · 说明」）：
+ *   1 = 行/列/宫基础互异（唯一候选）
+ *   2 = 单元内唯一位置（隐性唯一）
+ *   3 = 高级集合定式（宫-行列交叉、数对/三数组、X-Wing、Swordfish、XY-Wing、唯一矩形）
+ *   4 = 反证（其他数字会立刻矛盾）
+ *   5 = 回溯试探（兜底）
+ */
 const RULE_INFO: Record<RuleKind | 'probe' | 'search', { rule: number; label: string }> = {
-  latin: { rule: 1, label: '行/列/宫数字不能重复' },
-  region: { rule: 2, label: '宫内唯一位置' },
-  probe: { rule: 3, label: '反证：其他数字会立刻矛盾' },
-  search: { rule: 4, label: '回溯试探：该格最终是这个数字' },
+  latin: { rule: 1, label: '行/列/宫数字不能重复（唯一候选）' },
+  region: { rule: 2, label: '单元内唯一位置（隐性唯一）' },
+  pointing: { rule: 3, label: '宫-行/列交叉：指向消除后落子' },
+  claiming: { rule: 3, label: '行/列-宫交叉：占位消除后落子' },
+  subset: { rule: 3, label: '显性/隐性数对·三数组' },
+  fish: { rule: 3, label: 'X-Wing / Swordfish 鱼形' },
+  wing: { rule: 3, label: 'XY-Wing 三格翼' },
+  uniqueness: { rule: 3, label: '唯一矩形（题面唯一解前提下）' },
+  probe: { rule: 4, label: '反证：其他数字会立刻矛盾' },
+  search: { rule: 5, label: '回溯试探：该格最终是这个数字' },
+}
+
+/**
+ * 是否题面唯一解（给「唯一矩形」做前提）。
+ * 只在 9×9 及以下做预算内检查；大棋盘为性能考虑不启用唯一矩形。
+ */
+function assumeUnique(givens: number[], regions: number[], n: number): boolean {
+  if (n > 9) return false
+  const counted = countSolutions(givens, regions, 2, 200_000, n)
+  return !counted.timedOut && counted.count === 1
 }
 
 function fallbackSolve(
@@ -21,6 +46,7 @@ function fallbackSolve(
   regions: number[],
   n: number,
   maxNodes: number,
+  options: PropagateOptions,
 ): number[] | null {
   const size = n * n
   let nodes = 0
@@ -33,7 +59,7 @@ function fallbackSolve(
       timedOut = true
       return null
     }
-    if (!propagate(work, regions, undefined, n)) return null
+    if (!propagate(work, regions, undefined, n, options)) return null
     let choice = -1
     for (let i = 0; i < size; i++) {
       if (work[i] === 0) {
@@ -88,7 +114,10 @@ export function planLogicSolve(puzzle: Puzzle, initialState: GameState): LogicPl
   }
   const onSet = (index: number, value: number, kind: RuleKind): void => emit(index, value, kind)
 
-  if (!propagate(grid, regions, onSet, n)) return emptyPlan
+  // 唯一矩形需要「题面唯一解」前提；其余高级定式无条件可用
+  const options: PropagateOptions = { unique: assumeUnique(s.givens.slice(), regions, n) }
+
+  if (!propagate(grid, regions, onSet, n, options)) return emptyPlan
 
   // 大棋盘的反证预算（毫秒）
   const deadline = Date.now() + (n > 9 ? 6000 : 60_000)
@@ -126,7 +155,7 @@ export function planLogicSolve(puzzle: Puzzle, initialState: GameState): LogicPl
       for (let v = 1; v <= n; v++) {
         const trial = grid.slice()
         trial[i] = v
-        if (propagate(trial, regions, undefined, n)) feasible.push(v)
+        if (propagate(trial, regions, undefined, n, options)) feasible.push(v)
       }
       if (feasible.length === 0) return emptyPlan
       if (feasible.length === 1) forced.push({ index: i, value: feasible[0]! })
@@ -141,7 +170,7 @@ export function planLogicSolve(puzzle: Puzzle, initialState: GameState): LogicPl
         emit(index, value, 'probe')
       }
     }
-    if (!propagate(grid, regions, onSet, n)) return emptyPlan
+    if (!propagate(grid, regions, onSet, n, options)) return emptyPlan
   }
 
   let stillUnknown = false
@@ -152,7 +181,7 @@ export function planLogicSolve(puzzle: Puzzle, initialState: GameState): LogicPl
     }
   }
   if (stillUnknown) {
-    const found = fallbackSolve(grid, regions, n, n > 9 ? 200_000 : 1_000_000)
+    const found = fallbackSolve(grid, regions, n, n > 9 ? 200_000 : 1_000_000, options)
     if (!found) {
       // 大棋盘来回溯不出来时，保留已推出的帧（可回放但未推满）
       if (n > 9 && frames.length) {
